@@ -1,17 +1,6 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-#ISSUE
-#Caching -> all to memory? Skip disk? RAMDISK?
-#Doesn't show which year it ended
-#Conditions for money
-
-#TODO: perhaps parse Individual data (perhaps in different spreadsheet) <----- ***this too
-#TODO: SCRAPE INDIEGOGO WEEKLY FOR EVERYTHING FOR NEXT 2/3 WEEKS, 24th July
-#TODO: individual contributions
-
-#TRY TO SCRAPE KICKSTARTER
-#BUILD DATABASE MODEL
 import gevent.monkey
 gevent.monkey.patch_socket()
 
@@ -32,21 +21,14 @@ from htmlentitydefs import name2codepoint as n2cp
 from httplib import BadStatusLine
 import lxml.html
 from lxml.cssselect import CSSSelector
+
 INDIEGOGO_BASE_URL = 'http://www.indiegogo.com'
-THREADS = 50
+THREADS = 100
 
 def decode_htmlentities(string):
     """
     Decode HTML entities–hex, decimal, or named–in a string
     @see http://snippets.dzone.com/posts/show/4569
-
-    >>> u = u'E tu vivrai nel terrore - L&#x27;aldil&#xE0; (1981)'
-    >>> print decode_htmlentities(u).encode('UTF-8')
-    E tu vivrai nel terrore - L'aldilà (1981)
-    >>> print decode_htmlentities("l&#39;eau")
-    l'eau
-    >>> print decode_htmlentities("foo &lt; bar")                
-    foo < bar
     """
     def substitute_entity(match):
         ent = match.group(3)
@@ -73,6 +55,7 @@ def create_dir_if_not_exist(path):
     except OSError as exception:
         if exception.errno != errno.EEXIST:
             raise
+            
 def parse_project_summary(proj, page_num):
     '''
     Parses the summary html to extract needed info, 
@@ -82,7 +65,7 @@ def parse_project_summary(proj, page_num):
     retval = {}    
     campaign_title_r = proj.xpath('.//a[contains(@class, "name")]', smart_strings=False)
     if campaign_title_r:
-        campaign_link = INDIEGOGO_BASE_URL + campaign_title_r[0].get('href')
+        campaign_link = INDIEGOGO_BASE_URL + campaign_title_r[0].get('href').replace('/pixx', '')
         retval[campaign_link] = {}
         retval[campaign_link]['page_num'] = page_num
         retval[campaign_link]['campaign_title'] = ''
@@ -107,11 +90,11 @@ def parse_project_summary(proj, page_num):
         if funders_r:
             retval[campaign_link]['num_funders'] = funders_r[0].strip()
 
-        raised_r = proj.xpath('.//*[@id="project-stats-funding-amt"]/span[1]/text()', smart_strings=False)
+        raised_r = proj.xpath('.//*[@id="project-stats-funding-amt"]/span/span/text()', smart_strings=False)
         for raised in raised_r:
             retval[campaign_link]['amount_raised'] = re.sub('[^\d]', '', raised)
 
-        currency_r = proj.xpath('.//*[@id="currency_code"]/text()', smart_strings=False)
+        currency_r = proj.xpath('.//*[@id="project-stats-funding-amt"]/span/em/text()', smart_strings=False)
         for currency in currency_r:
             retval[campaign_link]['currency_code'] = currency
 
@@ -140,10 +123,11 @@ def parse_project(proj_html):
 
     target_selector = CSSSelector('.money-raised.goal')
     for goal in target_selector(project):
-        for amount in goal.xpath('.//text()', smart_strings=False):
-            target_m = re.match('Raised of (?P<target>.+) Goal', amount.strip())
-            if target_m:
-                retobj['target_amount'] = re.sub('[^\d]', '', target_m.groupdict()['target'])
+        for amount in goal.xpath('.//span/span/text()', smart_strings=False):
+            # target_m = re.match('Raised of (?P<target>.+) Goal', amount.strip())
+            # if target_m:
+                # retobj['target_amount'] = re.sub('[^\d]', '', target_m.groupdict()['target'])
+            retobj['target_amount'] = re.sub('[^\d]', '', amount.strip())
 
     teaminfo_selector = CSSSelector('.name.bold')
     for member in teaminfo_selector(project):
@@ -223,8 +207,8 @@ def _fetch(url, retry=False):
     except urllib2.HTTPError as e:
         if e.code == 500:
             return '500 Error'
-        if e.code == 404:
-            return '404 Error'
+        elif e.code == 404:
+            return '404 Error'            
         print 'Refetching page ' + url + ' due to ' + str(e.code)
         print e
         return _fetch(url, retry=True)
@@ -381,7 +365,7 @@ def convert_to_csv():
     with open(phase2_outfile, 'r') as f:
         projects_info = json.load(f)
 
-    with open(phase2_outfile + '.csv', 'wb') as f:
+    with open(csv_outfile, 'wb') as f:
         csv_file = csv.writer(f)
         f.write(u'\ufeff'.encode('utf8')) # BOM for opening in excel
         csv_file.writerow([u'Category', 
@@ -392,12 +376,21 @@ def convert_to_csv():
                     u'Currency Code', 
                     u'Number of Funders', 
                     u'ETA (days)', 
-                    u'Deadline', 
+                    u'Start Date',
+                    u'End Date',
                     u'Location',
-                    u'Team Member(s)',
-                    u'Perk(s)'])
+                    u'Team Member (Name, URL)',
+                    u'Perk (Amount, Claimed, Max Claims)'])
         for url, info in projects_info.iteritems():
-            print url
+            team_info = ''
+            perk_info = ''
+            
+            for person in info['team_info']:
+                team_info += '[ ' + decode_htmlentities(person[0]).encode("utf8") + ', ' + decode_htmlentities(person[1]).encode("utf8") + ' ], '
+            
+            for perk in info['perk_info']:
+                perk_info += '[ ' + decode_htmlentities(perk[0]).encode("utf8") + ', ' + decode_htmlentities(perk[1]).encode("utf8") + ', ' + decode_htmlentities(perk[2]).encode("utf8") + ' ], '
+                
             row = [ decode_htmlentities(info['category']).encode("utf8"),
                     decode_htmlentities(info['campaign_title']).encode("utf8"),
                     decode_htmlentities(url).encode("utf8"),
@@ -406,17 +399,13 @@ def convert_to_csv():
                     decode_htmlentities(info['currency_code']).encode("utf8"),
                     decode_htmlentities(info['num_funders']).encode("utf8"),
                     decode_htmlentities(info['campaign_eta']).encode("utf8"),
-                    decode_htmlentities(info['deadline']).encode("utf8"),
-                    decode_htmlentities(info['location']).encode("utf8") ]
-
-            for person in info['team_info']:
-                row.append(decode_htmlentities(person[0]).encode("utf8"))
-                row.append(decode_htmlentities(person[1]).encode("utf8"))
+                    decode_htmlentities(info['start_date']).encode("utf8"),
+                    decode_htmlentities(info['end_date']).encode("utf8"),
+                    decode_htmlentities(info['location']).encode("utf8"),
+                    team_info,
+                    perk_info ]
             
             csv_file.writerow(row)
-
-#print parse_individual(_fetch('http://www.indiegogo.com/individuals/3023401'))
-#parse_all_individuals()
 
 if __name__ == '__main__':
     """
@@ -478,9 +467,9 @@ if __name__ == '__main__':
     create_dir_if_not_exist(cache_path)
     create_dir_if_not_exist(proj_cache_path)
     timestamp = time.strftime('%Y-%m-%d_%I.%M%p', time.localtime())
-    phase1_outfile = category + '_phase1.txt'
-    #phase2_outfile = category + '_final_12am_' + timestamp + '.txt'
-    phase2_outfile = 'output_test.json'
+    phase1_outfile = category + '_' + timestamp + '_phase1.json'
+    phase2_outfile = category + '_' + timestamp + '_phase2.json'
+    csv_outfile = category + '_' + timestamp + '.csv'
     '''START'''
     START = args.start
     END = args.end
